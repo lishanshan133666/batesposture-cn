@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# runtime artifacts
+models/
+*.task
+open_dashboard.flag
+*.log
+.batesposture_logs/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# local settings / secrets
+settings.json
+.env

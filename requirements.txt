@@ -1,0 +1,9 @@
+batesposture==1.1.1
+mediapipe==0.10.35
+pyqt6==6.9.1
+numpy>=1.26.4
+opencv-python>=4.11.0.86
+opencv-contrib-python
+pillow
+plyer>=2.1.0
+psutil>=7.0.0
