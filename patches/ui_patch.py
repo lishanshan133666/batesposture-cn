@@ -351,6 +351,211 @@ def patch_single_instance() -> None:
     print(f"[ok] second launch opens the dashboard -> {path}")
 
 
+RECALIBRATE_MARKER = "# [PostureGuard] recalibrate action"
+
+RECALIBRATE_ACTION = '''        # [PostureGuard] recalibrate action
+        self.recalibrate_action = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload),
+            "重新校准标准坐姿…",
+            menu,
+        )
+        self.recalibrate_action.triggered.connect(self.recalibrate_posture)
+        menu.addAction(self.recalibrate_action)
+'''
+
+RECALIBRATE_METHOD = '''    # [PostureGuard] recalibrate action
+    def recalibrate_posture(self) -> None:
+        """Stop tracking, relaunch the calibration wizard, then resume."""
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import QDialog, QMessageBox
+
+        from .onboarding import OnboardingWizard
+
+        was_tracking = self.tracking_enabled
+        was_completed = self._settings.profile.has_completed_onboarding
+        if was_tracking:
+            self.toggle_tracking()
+        self._settings.update_profile(has_completed_onboarding=False)
+        self._settings.save_all()
+
+        def _open_wizard() -> None:
+            wizard = OnboardingWizard(self._settings, None)
+            accepted = wizard.exec() == QDialog.DialogCode.Accepted
+            if not accepted:
+                # User cancelled: keep the previous baseline / first-run state.
+                self._settings.update_profile(has_completed_onboarding=was_completed)
+                self._settings.save_all()
+            if was_tracking:
+                self.toggle_tracking()
+            if accepted:
+                QMessageBox.information(
+                    None,
+                    "重新校准完成",
+                    "新的标准坐姿已经保存，之后的评分会以这次录制的基线为准。",
+                )
+
+        # Give the capture thread a moment to release the camera first.
+        QTimer.singleShot(1200, _open_wizard)
+
+'''
+
+
+def patch_recalibrate() -> None:
+    """Add a tray entry that re-runs the 6-second baseline calibration."""
+    path = _purelib() / "batesposture" / "ui" / "tray.py"
+    text = path.read_text(encoding="utf-8")
+    if RECALIBRATE_MARKER in text and "def recalibrate_posture" in text:
+        if "was_completed" in text:
+            print("[ok] recalibration menu entry already patched")
+            return
+        start = text.find(RECALIBRATE_MARKER + "\n    def recalibrate_posture")
+        end = text.find("    def open_settings_zh(self) -> None:\n", start)
+        if start < 0 or end < 0:
+            raise SystemExit("[!] could not locate the recalibrate method to upgrade")
+        text = text[:start] + RECALIBRATE_METHOD + text[end:]
+        path.write_text(text, encoding="utf-8")
+        print(f"[ok] recalibration method upgraded (cancel keeps previous baseline) -> {path}")
+        return
+    anchor = "        self.settings_action.triggered.connect(self.open_settings_zh)\n"
+    if anchor not in text:
+        raise SystemExit(
+            "[!] tray.py settings action anchor changed; re-apply recalibrate patch manually"
+        )
+    text = text.replace(anchor, anchor + RECALIBRATE_ACTION, 1)
+    method_anchor = "    def open_settings_zh(self) -> None:\n"
+    if method_anchor not in text:
+        raise SystemExit("[!] tray.py open_settings_zh anchor missing")
+    text = text.replace(method_anchor, RECALIBRATE_METHOD + method_anchor, 1)
+    path.write_text(text, encoding="utf-8")
+    print(f"[ok] recalibration menu entry added -> {path}")
+
+
+ONBOARDING_CAMERA_MARKER = "# [PostureGuard] onboarding camera backend"
+
+ONBOARDING_CAMERA_HELPER = '''# [PostureGuard] onboarding camera backend
+def _open_camera(camera_id: int, backend_hint: int = 0):
+    """DirectShow first on Windows (MSMF returns black/garbled frames on this machine)."""
+    if sys.platform == "win32":
+        capture = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
+        if capture is not None and capture.isOpened():
+            capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            return capture
+        if capture is not None:
+            capture.release()
+    if backend_hint:
+        capture = cv2.VideoCapture(camera_id, backend_hint)
+        if capture is not None and capture.isOpened():
+            return capture
+    return cv2.VideoCapture(camera_id)
+
+
+'''
+
+
+def patch_onboarding_camera() -> None:
+    """Make the calibration wizard use the DirectShow backend as well."""
+    path = _purelib() / "batesposture" / "ui" / "onboarding.py"
+    text = path.read_text(encoding="utf-8")
+    if ONBOARDING_CAMERA_MARKER in text:
+        print("[ok] onboarding camera backend already patched")
+        return
+    anchor = "class CameraPreviewWidget(QLabel):\n"
+    if anchor not in text:
+        raise SystemExit("[!] onboarding.py layout changed; re-apply the camera patch manually")
+    text = text.replace(anchor, ONBOARDING_CAMERA_HELPER + anchor, 1)
+    text = text.replace(
+        "capture = cv2.VideoCapture(self._camera_id)",
+        "capture = _open_camera(self._camera_id)",
+        1,
+    )
+    text = text.replace("capture = cv2.VideoCapture(camera_id)", "capture = _open_camera(camera_id)", 1)
+    path.write_text(text, encoding="utf-8")
+    print(f"[ok] onboarding camera backend patched -> {path}")
+
+
+ONBOARDING_ZH_MARKER = "# [PostureGuard] onboarding Chinese"
+
+ONBOARDING_ZH_REPLACEMENTS = [
+    ("Welcome to Posture Coach", "欢迎使用坐姿提醒"),
+    ("We will calibrate your experience in three quick steps.", "三步完成校准，让评分更贴合你的坐姿。"),
+    (
+        "Great posture starts with awareness. We'll help you dial in camera framing, "
+        "learn posture cues, and capture your personal baseline so reminders feel tailored.",
+        "好的坐姿从「察觉」开始。这里会帮你调好摄像头取景、认识坐姿要点，"
+        "并录一段你的标准坐姿作为基线，之后的评分和提醒都会按你的基线来判断。",
+    ),
+    ("- Find a well-lit space", "- 找一个光线充足的位置"),
+    ("- Position your camera at eye level", "- 让摄像头大致与眼睛同高"),
+    ("- Sit naturally - no need to pose!", "- 自然坐好即可，不用刻意摆姿势！"),
+    ("Align your camera", "调整摄像头"),
+    (
+        "Center yourself and ensure your upper body is in frame.",
+        "让自己位于画面中央，确保上半身都在画面里。",
+    ),
+    (
+        "Adjust your seating so your head and shoulders are visible. Use natural lighting when possible.",
+        "调整座椅和摄像头，让头部、双肩清晰可见；尽量使用自然光。",
+    ),
+    ("Camera preview will appear here", "摄像头画面将显示在这里"),
+    ("Unable to open camera", "无法打开摄像头"),
+    ("Camera feed unavailable", "摄像头画面不可用"),
+    ("Capture your baseline", "录制标准坐姿"),
+    (
+        "We'll measure a short sample so posture insights match your neutral stance.",
+        "会采集约 6 秒你的自然坐姿，作为以后的评分基线。",
+    ),
+    (
+        r"""'When you\'re ready, sit comfortably and press "Start calibration".'""",
+        "'准备好后，请坐正、放松，然后点「开始录制」。'",
+    ),
+    ("Start calibration", "开始录制"),
+    ("Collecting data... Keep still for six seconds.", "正在录制…请保持不动 6 秒。"),
+    ("Baseline captured.", "标准坐姿已录制。"),
+    ("- Average posture score: {score:.1f}%", "- 平均坐姿评分：{score:.1f}"),
+    ("- Neck angle: {neck:.1f} deg", "- 颈部角度：{neck:.1f}°"),
+    ("- Shoulder balance delta: {delta:.3f}", "- 双肩高度差：{delta:.3f}"),
+    ("Calibration failed", "录制失败"),
+    ('self.tr("Calibration")', 'self.tr("录制标准坐姿")'),
+    ("Posture Coach Setup", "坐姿校准"),
+    ("Unable to access camera", "无法访问摄像头"),
+    ("Calibration cancelled", "已取消录制"),
+    (
+        "No posture data captured",
+        "没有采集到坐姿数据，请确保上半身完整出现在画面中。",
+    ),
+]
+
+ONBOARDING_BUTTONS = '''        self.setButtonText(QWizard.WizardButton.BackButton, "上一步")
+        self.setButtonText(QWizard.WizardButton.NextButton, "下一步")
+        self.setButtonText(QWizard.WizardButton.FinishButton, "完成")
+        self.setButtonText(QWizard.WizardButton.CancelButton, "取消")
+'''
+
+
+def patch_onboarding_zh() -> None:
+    """Localise the calibration wizard (welcome / camera / calibration pages)."""
+    path = _purelib() / "batesposture" / "ui" / "onboarding.py"
+    text = path.read_text(encoding="utf-8")
+    if ONBOARDING_ZH_MARKER in text:
+        print("[ok] onboarding wizard already localised")
+        return
+    for old, new in ONBOARDING_ZH_REPLACEMENTS:
+        if old not in text:
+            raise SystemExit(f"[!] onboarding.py missing string: {old!r}")
+        text = text.replace(old, new, 1)
+    anchor = "        self.setMinimumWidth(500)\n"
+    if anchor not in text:
+        raise SystemExit("[!] onboarding.py wizard init changed; add button labels manually")
+    text = text.replace(anchor, anchor + ONBOARDING_BUTTONS, 1)
+    text = text.replace(
+        "from __future__ import annotations\n",
+        "from __future__ import annotations\n\n" + ONBOARDING_ZH_MARKER + "\n",
+        1,
+    )
+    path.write_text(text, encoding="utf-8")
+    print(f"[ok] onboarding wizard localised -> {path}")
+
+
 POSE_OVERLAY_MARKER = "# [PostureGuard] CJK overlay"
 
 POSE_OVERLAY_METHOD = '''    # [PostureGuard] CJK overlay
@@ -416,5 +621,8 @@ def patch_all() -> None:
     install_ui_zh()
     patch_dashboard()
     patch_tray()
+    patch_recalibrate()
+    patch_onboarding_camera()
+    patch_onboarding_zh()
     patch_pose_overlay()
     patch_single_instance()
