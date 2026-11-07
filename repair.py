@@ -173,6 +173,50 @@ def patch_camera_service() -> None:
     print(f"[ok] camera_service patched (DirectShow camera backend) -> {camera}")
 
 
+CAMERA_WATCHDOG_MARKER = "# [PostureGuard] reopen the camera after sleep/resume"
+
+CAMERA_WATCHDOG_OLD = '''                ret, frame = self._cap.read()
+                if not ret:
+                    logger.warning("Failed to read frame from camera; stopping capture")
+                    self.stop()
+                    break
+'''
+
+CAMERA_WATCHDOG_NEW = '''                ret, frame = self._cap.read()
+                if not ret:
+                    logger.warning("Failed to read frame from camera; stopping capture")
+                    self.stop()
+                    break
+                # [PostureGuard] reopen the camera after sleep/resume
+                if frame is not None and float(frame.mean()) < 1.0:
+                    self._black_frames = getattr(self, "_black_frames", 0) + 1
+                    if self._black_frames >= 90:
+                        logger.info("Camera frames are black; reopening capture")
+                        try:
+                            self._cap.release()
+                        except Exception:  # noqa: BLE001 - best effort
+                            pass
+                        self._cap = self._open_capture(self._camera_id)
+                        self._black_frames = 0
+                elif frame is not None:
+                    self._black_frames = 0
+'''
+
+
+def patch_camera_watchdog() -> None:
+    """Recover the camera when Windows sleep/resume leaves it returning black frames."""
+    camera = Path(sysconfig_purelib()) / "batesposture" / "services" / "camera_service.py"
+    text = camera.read_text(encoding="utf-8")
+    if CAMERA_WATCHDOG_MARKER in text:
+        print("[ok] camera black-frame recovery already patched")
+        return
+    if CAMERA_WATCHDOG_OLD not in text:
+        raise SystemExit("[!] camera_service.py read loop changed; re-apply the watchdog manually")
+    text = text.replace(CAMERA_WATCHDOG_OLD, CAMERA_WATCHDOG_NEW, 1)
+    camera.write_text(text, encoding="utf-8")
+    print(f"[ok] camera black-frame recovery patched -> {camera}")
+
+
 def patch_notification_module() -> None:
     """Install the banner-based Windows notification module."""
     package = Path(sysconfig_purelib()) / "batesposture"
@@ -282,6 +326,7 @@ def main() -> int:
     ensure_versions()
     install_mediapipe_shim()
     patch_camera_service()
+    patch_camera_watchdog()
     patch_notification_module()
     patch_ui()
     patch_auto_start()

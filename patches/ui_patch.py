@@ -303,6 +303,54 @@ def patch_tray() -> None:
     path.write_text(text, encoding="utf-8")
 
 
+SINGLE_INSTANCE_MARKER = "# [PostureGuard] second launch opens the dashboard"
+
+SINGLE_INSTANCE_OLD = '''    logger.info("Another BatesPosture instance is already running")
+    if has_info:
+        logger.info(
+            "Active lock details: pid=%s host=%s app=%s",
+            pid,
+            hostname or "unknown",
+            appname or "unknown",
+        )
+    return None'''
+
+SINGLE_INSTANCE_NEW = '''    logger.info("Another BatesPosture instance is already running")
+    if has_info:
+        logger.info(
+            "Active lock details: pid=%s host=%s app=%s",
+            pid,
+            hostname or "unknown",
+            appname or "unknown",
+        )
+    # [PostureGuard] second launch opens the dashboard
+    try:
+        with open(
+            r"D:\\Apps\\PostureGuard\\open_dashboard.flag", "w", encoding="utf-8"
+        ) as flag_file:
+            flag_file.write("1")
+        logger.info("Requested the running instance to open its dashboard")
+    except OSError:
+        logger.debug("could not drop the dashboard flag", exc_info=True)
+    return None'''
+
+
+def patch_single_instance() -> None:
+    """Second launch of the shortcut asks the running instance to show its panel."""
+    path = _purelib() / "batesposture" / "main.py"
+    text = path.read_text(encoding="utf-8")
+    if SINGLE_INSTANCE_MARKER in text:
+        print("[ok] second-launch shortcut already opens the dashboard")
+        return
+    if SINGLE_INSTANCE_OLD not in text:
+        raise SystemExit(
+            "[!] main.py lock handling changed; re-apply the single-instance patch manually"
+        )
+    text = text.replace(SINGLE_INSTANCE_OLD, SINGLE_INSTANCE_NEW, 1)
+    path.write_text(text, encoding="utf-8")
+    print(f"[ok] second launch opens the dashboard -> {path}")
+
+
 POSE_OVERLAY_MARKER = "# [PostureGuard] CJK overlay"
 
 POSE_OVERLAY_METHOD = '''    # [PostureGuard] CJK overlay
@@ -369,3 +417,4 @@ def patch_all() -> None:
     patch_dashboard()
     patch_tray()
     patch_pose_overlay()
+    patch_single_instance()
